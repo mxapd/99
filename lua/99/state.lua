@@ -52,7 +52,7 @@ end
 local function get_tmp_dir(oos)
   local tmp_dir = oos.tmp_dir and type(oos.tmp_dir) == "string" and oos.tmp_dir
     or oos.__tmp_dir and oos.__tmp_dir
-    or "./tmp"
+    or vim.fn.tempname()
   if tmp_dir then
     tmp_dir = vim.fn.expand(tmp_dir)
   end

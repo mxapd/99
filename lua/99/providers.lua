@@ -53,6 +53,22 @@ function BaseProvider:_retrieve_response(context)
 
   local str = table.concat(result, "\n")
 
+  -- Strip ANSI escape codes (for providers like Ollama that output terminal codes)
+  -- Pattern matches: ESC [ <params> <letter> (CSI sequences)
+  str = str:gsub("\27%[%d*m", ""):gsub("\27%[%?%d+h", ""):gsub("\27%[%?%d+l", "")
+  str = str:gsub("\27%[=%d+h", ""):gsub("\27%[=%d+l", "")
+  str = str:gsub("\27%[K", ""):gsub("\27%[2K", "")
+  str = str:gsub("\27%[?25l", ""):gsub("\27%[?25h", ""):gsub("\27%[?2026l", ""):gsub("\27%[?2026h", "")
+  str = str:gsub("\27%[1S", ""):gsub("\27%[2K", "")
+  str = str:gsub("\27%[1G", "")
+
+  -- Strip all non-ASCII bytes (removes braille spinners, emoji, etc.)
+  -- Keep only ASCII printable chars (32-126), newline (10), tab (9)
+  str = str:gsub("[\128-\255]", "")
+
+  -- Strip control characters except newline and tab (keep printable text)
+  str = str:gsub("[\1-\8\11\12\14-\31]", "")
+
   -- Filter out OpenCode diagnostic/status messages
   -- Keep lines that look like actual code (don't match status patterns)
   local lines = vim.split(str, "\n")
@@ -73,6 +89,9 @@ function BaseProvider:_retrieve_response(context)
     "^Wrote file successfully%.",
   }
 
+  -- Also skip any line containing code fences
+  local code_fence_pattern = ".*`+.*"
+
   for _, line in ipairs(lines) do
     -- Skip empty lines
     if line == "" then
@@ -85,6 +104,11 @@ function BaseProvider:_retrieve_response(context)
         goto continue
       end
     end
+
+    -- Skip lines containing code fences
+    if line:match(code_fence_pattern) then
+      goto continue
+    end
     
     -- Keep this line (looks like actual content/code)
     table.insert(filtered, line)
@@ -92,7 +116,43 @@ function BaseProvider:_retrieve_response(context)
     ::continue::
   end
 
+  -- Strip import statements from code
+  local import_patterns = {
+    "^use%s+[%w_:]+",                     -- Rust: use xxx::xxx;
+    "^import%s+[%w_]+",                    -- Python/JS: import xxx
+    "^from%s+[%w_]+",                      -- Python: from xxx import
+    "^const%s+[%w_]+%s*=%s*require",      -- JS: const xxx = require
+    "^package%s+[%w_]+",                   -- Go: package xxx
+    "^import%s*%(",                         -- Go: import (
+    "^#include%s*",                       -- C/C++: #include <xxx>
+    "^require%s+",                         -- Ruby: require xxx
+    "^require_relative",                   -- Ruby: require_relative
+    "^import%s+[%w_.]+%;",                 -- Java: import xxx.*;
+  }
+
+  local code_only = {}
+  for _, line in ipairs(filtered) do
+    local is_import = false
+    for _, pattern in ipairs(import_patterns) do
+      if line:match(pattern) then
+        is_import = true
+        break
+      end
+    end
+    if not is_import then
+      table.insert(code_only, line)
+    end
+  end
+  filtered = code_only
+
   str = table.concat(filtered, "\n")
+
+  -- Strip leading and trailing whitespace and newlines
+  str = str:gsub("^%s+", ""):gsub("%s+$", "")
+
+  -- Collapse multiple consecutive newlines into single newline
+  str = str:gsub("\n\n+", "\n")
+
   logger:debug("retrieve_results", "results", str)
 
   return true, str
@@ -494,6 +554,51 @@ function GeminiCLIProvider._get_default_model()
   return "auto"
 end
 
+--- @class OllamaProvider : _99.Providers.BaseProvider
+local OllamaProvider = setmetatable({}, { __index = BaseProvider })
+
+--- @param query string
+--- @param context _99.Prompt
+--- @return string[]
+function OllamaProvider._build_command(_, query, context)
+  local cmd = "ollama run " 
+    .. vim.fn.shellescape(context.model) .. " " 
+    .. vim.fn.shellescape(query)
+    .. " > " .. vim.fn.shellescape(context.tmp_file)
+    .. " 2>&1"
+  return { "sh", "-c", cmd }
+end
+
+--- @return string
+function OllamaProvider._get_provider_name()
+  return "OllamaProvider"
+end
+
+--- @return string
+function OllamaProvider._get_default_model()
+  return "qwen3.5:9b"
+end
+
+--- @param callback fun(models: string[]|nil, err: string|nil): nil
+function OllamaProvider.fetch_models(callback)
+  vim.system({ "ollama", "list" }, { text = true }, function(obj)
+    vim.schedule(function()
+      if obj.code ~= 0 then
+        callback(nil, "Failed to fetch models from ollama")
+        return
+      end
+      local models = {}
+      for line in obj.stdout:gmatch("[^\r\n]+") do
+        local model = line:match("^([%w%-%:]+)")
+        if model and model ~= "NAME" then
+          table.insert(models, model)
+        end
+      end
+      callback(models, nil)
+    end)
+  end)
+end
+
 return {
   BaseProvider = BaseProvider,
   OpenCodeProvider = OpenCodeProvider,
@@ -501,4 +606,5 @@ return {
   CursorAgentProvider = CursorAgentProvider,
   KiroProvider = KiroProvider,
   GeminiCLIProvider = GeminiCLIProvider,
+  OllamaProvider = OllamaProvider,
 }

@@ -19,7 +19,10 @@ This document provides guidelines for agents working on the 99 codebase.
 ### Testing
 
 ```bash
-# Run all tests
+# Enter development environment (requires nix-shell with neovim + plenary)
+nix-shell
+
+# Run all tests (from inside nix-shell)
 make lua_test
 
 # Run a single test file (using plenary's busted)
@@ -48,6 +51,43 @@ make lua_fmt_check    # Check without modifying
 ```bash
 make lua_clean
 ```
+
+---
+
+## Development Environment
+
+### Nix Shell
+
+This project uses `shell.nix` to manage development dependencies. Key principles:
+
+1. **Never pull external dependencies into the project folder** - Dependencies should come from:
+   - The nix store (via nixpkgs) - preferred for CI/sandboxed environments
+   - User's home directory (e.g., `~/.local/share/nvim/...`)
+   - System-wide installations
+
+2. **Using nixpkgs dependencies** - Reference packages via nixpkgs:
+   ```nix
+   { pkgs ? import <nixpkgs> {} }:
+
+   pkgs.mkShell {
+     buildInputs = with pkgs; [
+       pkgs.vimPlugins.plenary-nvim  # stable reference via nixpkgs
+       pkgs.stylua
+     ];
+   }
+   ```
+
+3. **Passing nix store paths to Neovim** - Use environment variables in `shell.nix`:
+   ```nix
+   PLENARY_PATH = pkgs.vimPlugins.plenary-nvim.outPath;
+   ```
+
+   Then reference in `scripts/tests/minimal.vim`:
+   ```vim
+   if exists("$PLENARY_PATH")
+     let &rtp = $PLENARY_PATH . "," . &rtp
+   endif
+   ```
 
 ---
 
@@ -149,6 +189,65 @@ end)
 ```
 
 Use `require("99.test.test_utils")` for buffer setup, test providers with controllable resolution, and synchronous scheduling (`next_frame()`).
+
+---
+
+## Providers
+
+### Available Providers
+
+The plugin supports multiple LLM providers, configured via `setup()`:
+
+| Provider | Description | Default Model |
+|----------|-------------|---------------|
+| `OpenCodeProvider` | OpenCode CLI | `opencode/claude-sonnet-4-5` |
+| `ClaudeCodeProvider` | Claude Code CLI | `claude-sonnet-4-5` |
+| `CursorAgentProvider` | Cursor Agent CLI | `sonnet-4.5` |
+| `KiroProvider` | Kiro CLI | `claude-sonnet-4.5` |
+| `GeminiCLIProvider` | Gemini CLI | `auto` |
+| `OllamaProvider` | Ollama (local) | `qwen3.5:9b` |
+
+### Adding a New Provider
+
+Providers are defined in `lua/99/providers.lua`. Each provider must implement:
+
+```lua
+--- @class MyProvider : _99.Providers.BaseProvider
+local MyProvider = setmetatable({}, { __index = BaseProvider })
+
+--- @param query string
+--- @param context _99.Prompt
+--- @return string[]
+function MyProvider._build_command(_, query, context)
+  -- Return command as table (passed to vim.system)
+end
+
+--- @return string
+function MyProvider._get_provider_name()
+  return "MyProvider"
+end
+
+--- @return string
+function MyProvider._get_default_model()
+  return "default-model"
+end
+
+--- @param callback fun(models: string[]|nil, err: string|nil): nil
+function MyProvider.fetch_models(callback)
+  -- Optional: fetch available models from provider
+end
+```
+
+### Output Filtering
+
+The base provider's `_retrieve_response` method includes filtering for:
+
+- **ANSI escape codes** - strips terminal control sequences
+- **Code fences** - removes ``` markers
+- **Import statements** - strips common imports (Rust, Python, JS, Go, Ruby, Java, C++)
+- **Whitespace cleanup** - removes leading/trailing whitespace and collapses newlines
+
+This filtering applies to all providers automatically.
 
 ---
 

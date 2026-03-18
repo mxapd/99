@@ -9,13 +9,9 @@ describe("providers", function()
       local cmd =
         Providers.OpenCodeProvider._build_command(nil, "test query", request)
       eq({
-        "opencode",
-        "run",
-        "--agent",
-        "build",
-        "-m",
-        "anthropic/claude-sonnet-4-5",
-        "test query",
+        "sh",
+        "-c",
+        "opencode run --agent build --dir '.' -m 'anthropic/claude-sonnet-4-5' 'test query' 2>&1",
       }, cmd)
     end)
 
